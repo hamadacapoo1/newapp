@@ -29,16 +29,16 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.5'
+          gradle-version: '9.6.0'
 
       - name: Find project folder
         id: proj
         run: |
           echo "Repo contents:"
           ls -la
-          SETTINGS=$(find . -maxdepth 3 -name settings.gradle -not -path "*/node_modules/*" | head -n 1)
+          SETTINGS=$(find . -maxdepth 3 \( -name settings.gradle -o -name settings.gradle.kts \) -not -path "*/node_modules/*" | head -n 1)
           if [ -z "$SETTINGS" ]; then
             echo "settings.gradle not found. Upload the project files (app, build.gradle, settings.gradle) to the repo."
             exit 1
@@ -49,9 +49,15 @@ jobs:
 
       - name: Build debug APK
         working-directory: ${{ steps.proj.outputs.dir }}
-        env:
-          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
-        run: gradle assembleDebug --stacktrace
+        run: |
+          if [ -f ./gradlew ]; then
+            echo "Using project Gradle wrapper"
+            chmod +x ./gradlew
+            ./gradlew assembleDebug --stacktrace
+          else
+            echo "No wrapper, using Gradle 9.6.0"
+            gradle assembleDebug --stacktrace
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
