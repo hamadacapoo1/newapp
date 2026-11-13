@@ -45,6 +45,21 @@ public class NoteActivity extends BaseActivity {
                 Toast.makeText(NoteActivity.this, "تم الحفظ ✅", Toast.LENGTH_SHORT).show();
             }
         });
+        findViewById(R.id.btnTranslateNote).setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                TranslateDialog.show(NoteActivity.this, etBody.getText().toString(),
+                        new TranslateDialog.OnUse() {
+                            public void use(String t, boolean replace) {
+                                if (replace) {
+                                    etBody.setText(t);
+                                } else {
+                                    if (etBody.getText().length() > 0) etBody.append("\n\n");
+                                    etBody.append(t);
+                                }
+                            }
+                        });
+            }
+        });
         findViewById(R.id.btnCopy).setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);

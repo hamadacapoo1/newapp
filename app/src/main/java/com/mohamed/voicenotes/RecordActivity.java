@@ -1,26 +1,22 @@
 package com.mohamed.voicenotes;
 
 import android.Manifest;
-import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
-import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.LinearLayout;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.json.JSONObject;
-import org.vosk.Model;
-import org.vosk.Recognizer;
-import org.vosk.android.RecognitionListener;
-import org.vosk.android.SpeechService;
+import java.util.ArrayList;
+import java.util.List;
 
 public class RecordActivity extends BaseActivity {
 
@@ -28,13 +24,12 @@ public class RecordActivity extends BaseActivity {
 
     private EditText etText;
     private TextView tvStatus, tvPartial;
-    private Button btnToggle, btnSave;
+    private Button btnToggle, btnSave, btnTranslate;
+    private Spinner spEngine, spLang;
 
-    private SpeechService speechService;
-    private Recognizer recognizer;
+    private final List<String> codes = Langs.all();
+    private Stt stt;
     private boolean listening = false;
-    private boolean starting = false;
-    private boolean active = false;
     private boolean saved = false;
 
     private NotesDb db;
@@ -51,6 +46,44 @@ public class RecordActivity extends BaseActivity {
         etText = (EditText) findViewById(R.id.etText);
         btnToggle = (Button) findViewById(R.id.btnToggle);
         btnSave = (Button) findViewById(R.id.btnSave);
+        btnTranslate = (Button) findViewById(R.id.btnTranslate);
+        spEngine = (Spinner) findViewById(R.id.spEngine);
+        spLang = (Spinner) findViewById(R.id.spLang);
+
+        // محرك الصوت
+        List<String> eng = new ArrayList<String>();
+        eng.add("🔹 " + Engine.label(Engine.DEVICE));
+        eng.add("🔸 " + Engine.label(Engine.VOSK));
+        ArrayAdapter<String> ae = new ArrayAdapter<String>(this,
+                android.R.layout.simple_spinner_item, eng);
+        ae.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spEngine.setAdapter(ae);
+        spEngine.setSelection(Engine.VOSK.equals(Prefs.getEngine(this)) ? 1 : 0);
+        spEngine.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
+                Prefs.setEngine(RecordActivity.this, pos == 1 ? Engine.VOSK : Engine.DEVICE);
+            }
+
+            public void onNothingSelected(AdapterView<?> p) {
+            }
+        });
+
+        // لغة الكلام
+        List<String> names = new ArrayList<String>();
+        for (String c : codes) names.add(Langs.name(c));
+        ArrayAdapter<String> al = new ArrayAdapter<String>(this,
+                android.R.layout.simple_spinner_item, names);
+        al.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spLang.setAdapter(al);
+        spLang.setSelection(Langs.indexOf(Prefs.getSrc(this)));
+        spLang.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
+                Prefs.setSrc(RecordActivity.this, codes.get(pos));
+            }
+
+            public void onNothingSelected(AdapterView<?> p) {
+            }
+        });
 
         btnToggle.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
@@ -63,27 +96,35 @@ public class RecordActivity extends BaseActivity {
                 stopThenSave(false);
             }
         });
+        btnTranslate.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                TranslateDialog.show(RecordActivity.this, etText.getText().toString(),
+                        new TranslateDialog.OnUse() {
+                            public void use(String t, boolean replace) {
+                                if (replace) {
+                                    etText.setText(t);
+                                } else {
+                                    if (etText.getText().length() > 0) etText.append("\n\n");
+                                    etText.append(t);
+                                }
+                            }
+                        });
+            }
+        });
 
         Ui.rtl(this);
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
-        active = true;
-    }
-
-    @Override
     protected void onPause() {
         super.onPause();
-        active = false;
         if (listening) stopListening();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (listening) stopListening();
+        if (stt != null) stt.release();
     }
 
     @Override
@@ -93,8 +134,17 @@ public class RecordActivity extends BaseActivity {
 
     // ---------------- التسجيل ----------------
 
+    private void setIdleUi(String status) {
+        listening = false;
+        spEngine.setEnabled(true);
+        spLang.setEnabled(true);
+        btnToggle.setText("🎙 ابدأ التسجيل");
+        tvPartial.setText("");
+        tvStatus.setText(status);
+    }
+
     private void startListening() {
-        if (starting || listening) return;
+        if (listening) return;
 
         if (Build.VERSION.SDK_INT >= 23
                 && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
@@ -103,134 +153,61 @@ public class RecordActivity extends BaseActivity {
             return;
         }
 
-        if (!ModelManager.isReady(this)) {
-            Toast.makeText(this, "لازم تحمّل الموديل الأول", Toast.LENGTH_LONG).show();
-            startActivity(new Intent(this, SetupActivity.class));
-            return;
+        String engine = Prefs.getEngine(this);
+        String lang = Prefs.getSrc(this);
+
+        if (Engine.VOSK.equals(engine)) {
+            if (!"ar".equals(lang)) {
+                Toast.makeText(this, "الموديل المحمّل عربي بس. اختار «محرك الجهاز» للغات التانية.",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (!ModelManager.isReady(this)) {
+                Toast.makeText(this, "لازم تحمّل الموديل الأول", Toast.LENGTH_LONG).show();
+                startActivity(new Intent(this, SetupActivity.class));
+                return;
+            }
         }
 
-        starting = true;
-        btnToggle.setEnabled(false);
-        tvStatus.setText("جاري تحميل الموديل... (أول مرة بياخد شوية)");
+        if (stt != null) stt.release();
+        stt = Engine.create(this, true, engine);
+        listening = true;
+        spEngine.setEnabled(false);
+        spLang.setEnabled(false);
+        btnToggle.setText("⏹ إيقاف");
+        tvStatus.setText(Engine.VOSK.equals(engine)
+                ? "جاري تحميل الموديل... (أول مرة بياخد شوية)"
+                : "جاري تجهيز محرك الجهاز...");
 
-        new Thread(new Runnable() {
-            public void run() {
-                try {
-                    Model m = ModelManager.load(RecordActivity.this);
-                    final Recognizer r = new Recognizer(m, 16000.0f);
-                    final SpeechService s = new SpeechService(r, 16000.0f);
-                    runOnUiThread(new Runnable() {
-                        public void run() {
-                            starting = false;
-                            btnToggle.setEnabled(true);
-                            if (!active) {
-                                s.shutdown();
-                                closeQuiet(r);
-                                tvStatus.setText("متوقف.");
-                                return;
-                            }
-                            recognizer = r;
-                            speechService = s;
-                            s.startListening(listener);
-                            listening = true;
-                            btnToggle.setText("⏹ إيقاف");
-                            tvStatus.setText("🔴 بيسمعك دلوقتي... اتكلم");
-                        }
-                    });
-                } catch (final Throwable e) {
-                    runOnUiThread(new Runnable() {
-                        public void run() {
-                            starting = false;
-                            btnToggle.setEnabled(true);
-                            tvStatus.setText("خطأ: " + e);
-                        }
-                    });
-                }
+        stt.start(lang, new Stt.Listener() {
+            public void onReady() {
+                if (listening) tvStatus.setText("🔴 بيسمعك دلوقتي... اتكلم");
             }
-        }).start();
+
+            public void onPartial(String text) {
+                tvPartial.setText(text);
+            }
+
+            public void onFinal(String text) {
+                tvPartial.setText("");
+                appendFinal(text);
+            }
+
+            public void onError(String message) {
+                setIdleUi("⚠ " + message);
+            }
+        });
     }
 
     private void stopListening() {
-        if (speechService != null) {
-            try {
-                speechService.stop();
-            } catch (Exception e) {
-            }
-            try {
-                speechService.shutdown();
-            } catch (Exception e) {
-            }
-            speechService = null;
-        }
-        if (recognizer != null) {
-            closeQuiet(recognizer);
-            recognizer = null;
-        }
-        listening = false;
-        tvPartial.setText("");
-        btnToggle.setText("🎙 ابدأ التسجيل");
-        tvStatus.setText("متوقف.");
+        if (stt != null) stt.stop();
+        setIdleUi("متوقف.");
     }
 
-    private void closeQuiet(Recognizer r) {
-        try {
-            r.close();
-        } catch (Exception e) {
-        }
-    }
-
-    private final RecognitionListener listener = new RecognitionListener() {
-        public void onPartialResult(String hypothesis) {
-            final String t = extract(hypothesis, "partial");
-            runOnUiThread(new Runnable() {
-                public void run() {
-                    tvPartial.setText(t);
-                }
-            });
-        }
-
-        public void onResult(String hypothesis) {
-            appendFinal(extract(hypothesis, "text"));
-        }
-
-        public void onFinalResult(String hypothesis) {
-            appendFinal(extract(hypothesis, "text"));
-            runOnUiThread(new Runnable() {
-                public void run() {
-                    tvPartial.setText("");
-                }
-            });
-        }
-
-        public void onError(Exception e) {
-            final String msg = String.valueOf(e);
-            runOnUiThread(new Runnable() {
-                public void run() {
-                    tvStatus.setText("خطأ: " + msg);
-                }
-            });
-        }
-
-        public void onTimeout() {
-        }
-    };
-
-    private String extract(String json, String key) {
-        try {
-            return new JSONObject(json).optString(key, "");
-        } catch (Exception e) {
-            return "";
-        }
-    }
-
-    private void appendFinal(final String text) {
+    private void appendFinal(String text) {
         if (text == null || text.trim().length() == 0) return;
-        runOnUiThread(new Runnable() {
-            public void run() {
-                if (etText.getText().length() > 0) etText.append(" ");
-                etText.append(text.trim());
-            }
-        });
+        if (etText.getText().length() > 0) etText.append(" ");
+        etText.append(text.trim());
     }
 
     // ---------------- الحفظ ----------------
@@ -243,14 +220,15 @@ public class RecordActivity extends BaseActivity {
         return true;
     }
 
-    /** بيوقف التسجيل، وبعد ما آخر نتيجة توصل بيحفظ. */
+    /** بيوقف التسجيل، وبعد ما آخر نتيجة توصل بيحفظ (محرك الجهاز محتاج لحظة). */
     private void stopThenSave(final boolean auto) {
         if (saved) {
             finish();
             return;
         }
+        boolean wasListening = listening;
         stopListening();
-        etText.post(new Runnable() {
+        etText.postDelayed(new Runnable() {
             public void run() {
                 boolean ok = saveNote();
                 if (ok) {
@@ -265,7 +243,7 @@ public class RecordActivity extends BaseActivity {
                             Toast.LENGTH_SHORT).show();
                 }
             }
-        });
+        }, wasListening ? 900 : 0);
     }
 
     @Override

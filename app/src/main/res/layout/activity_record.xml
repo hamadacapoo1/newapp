@@ -6,6 +6,24 @@
     android:layoutDirection="rtl"
     android:padding="16dp">
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Spinner
+            android:id="@+id/spEngine"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1" />
+
+        <Spinner
+            android:id="@+id/spLang"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1" />
+    </LinearLayout>
+
     <TextView
         android:id="@+id/tvStatus"
         android:layout_width="match_parent"
@@ -29,6 +47,12 @@
         android:gravity="top|start"
         android:hint="الكلام هيظهر هنا... وتقدر تعدّل عليه"
         android:textSize="18sp" />
+
+    <Button
+        android:id="@+id/btnTranslate"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="🌐 ترجمة النص" />
 
     <LinearLayout
         android:layout_width="match_parent"

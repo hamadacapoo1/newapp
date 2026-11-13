@@ -69,6 +69,17 @@ public class MainActivity extends BaseActivity {
             }
         });
 
+        findViewById(R.id.btnConv).setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, ConversationActivity.class));
+            }
+        });
+        findViewById(R.id.btnLangs).setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, LanguagesActivity.class));
+            }
+        });
+
         etSearch.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s, int a, int b2, int c) {
             }
