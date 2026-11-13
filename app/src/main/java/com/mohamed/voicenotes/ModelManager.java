@@ -1,47 +1,62 @@
 package com.mohamed.voicenotes;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 
 import org.vosk.Model;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
+import java.util.Locale;
 
-/** تحميل موديل Vosk العربي مرة واحدة وتحميله في الذاكرة. */
+/** إدارة موديل Vosk العربي: مكانه، حالته، وتحميله في الذاكرة. التحميل نفسه بيتم في ModelDownloadService. */
 public class ModelManager {
 
     public static final String DEFAULT_URL =
             "https://alphacephei.com/vosk/models/vosk-model-ar-mgb2-0.4.zip";
 
+    public static final String S_IDLE = "idle";
+    public static final String S_DOWNLOADING = "downloading";
+    public static final String S_PAUSED = "paused";
+    public static final String S_UNZIPPING = "unzipping";
+    public static final String S_ERROR = "error";
+
     private static Model model;
 
-    public interface Progress {
-        void onProgress(String message, int percent);
-    }
+    // ---------------------------------------------------------------- أماكن الملفات
 
+    /** المكان اللي هيتحمل فيه الموديل */
     public static File baseDir(Context c) {
         File d = c.getExternalFilesDir(null);
         if (d == null) d = c.getFilesDir();
         return new File(d, "vosk_model");
     }
 
+    /** كل الأماكن اللي ممكن يكون الموديل موجود فيها (علشان نكتشف لو متحمل قبل كده) */
+    private static File[] candidates(Context c) {
+        File ext = c.getExternalFilesDir(null);
+        File in = c.getFilesDir();
+        if (ext != null) {
+            return new File[]{new File(ext, "vosk_model"), new File(in, "vosk_model")};
+        }
+        return new File[]{new File(in, "vosk_model")};
+    }
+
+    /** الملف المؤقت اللي بيتحمل فيه الـ zip (بيفضل موجود لو التحميل اتوقف) */
+    public static File partFile(Context c) {
+        return new File(baseDir(c).getParentFile(), "model_download.part");
+    }
+
+    /** مجلد مؤقت لفك الضغط */
+    public static File tmpDir(Context c) {
+        return new File(baseDir(c).getParentFile(), "vosk_model_tmp");
+    }
+
     private static boolean looksLikeModel(File d) {
         return new File(d, "am").isDirectory();
     }
 
-    /** يرجّع مجلد الموديل الحقيقي (اللي جواه am) أو null */
-    public static File findModelDir(Context c) {
-        File base = baseDir(c);
+    private static File findIn(File base) {
         if (!base.isDirectory()) return null;
         if (looksLikeModel(base)) return base;
         File[] kids = base.listFiles();
@@ -53,9 +68,21 @@ public class ModelManager {
         return null;
     }
 
+    /** يرجّع مجلد الموديل الحقيقي (اللي جواه am) أو null */
+    public static File findModelDir(Context c) {
+        File[] cands = candidates(c);
+        for (int i = 0; i < cands.length; i++) {
+            File f = findIn(cands[i]);
+            if (f != null) return f;
+        }
+        return null;
+    }
+
     public static boolean isReady(Context c) {
         return findModelDir(c) != null;
     }
+
+    // ---------------------------------------------------------------- تحميل الموديل في الذاكرة
 
     public static synchronized Model load(Context c) throws IOException {
         if (model == null) {
@@ -76,99 +103,112 @@ public class ModelManager {
         }
     }
 
+    /** مسح الموديل بالكامل + أي تحميل ناقص */
     public static void delete(Context c) {
         release();
-        deleteRec(baseDir(c));
+        File[] cands = candidates(c);
+        for (int i = 0; i < cands.length; i++) deleteRec(cands[i]);
+        cleanup(c);
     }
 
-    public static void download(Context c, String urlStr, Progress p) throws IOException {
-        release();
-        File base = baseDir(c);
-        File parent = base.getParentFile();
-        deleteRec(base);
-
-        if (parent.getUsableSpace() < 1200L * 1024 * 1024) {
-            throw new IOException("المساحة الفاضية أقل من 1.2 جيجا");
-        }
-
-        File zip = new File(parent, "model_download.zip");
-        try {
-            HttpURLConnection con = (HttpURLConnection) new URL(urlStr).openConnection();
-            con.setConnectTimeout(20000);
-            con.setReadTimeout(60000);
-            con.connect();
-            if (con.getResponseCode() != 200) {
-                throw new IOException("فشل التحميل، الكود: " + con.getResponseCode());
-            }
-            long total = con.getContentLength();
-
-            InputStream in = new BufferedInputStream(con.getInputStream());
-            OutputStream out = new BufferedOutputStream(new FileOutputStream(zip));
-            try {
-                byte[] buf = new byte[64 * 1024];
-                long done = 0;
-                long lastMb = -1;
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    out.write(buf, 0, n);
-                    done += n;
-                    long mb = done / (1024 * 1024);
-                    if (mb != lastMb) {
-                        lastMb = mb;
-                        int pct = total > 0 ? (int) (done * 100 / total) : -1;
-                        p.onProgress("جاري التحميل... " + mb + " MB", pct);
-                    }
-                }
-            } finally {
-                out.close();
-                in.close();
-            }
-
-            p.onProgress("جاري فك الضغط...", -1);
-            unzip(zip, base, p);
-        } finally {
-            zip.delete();
-        }
-
-        if (findModelDir(c) == null) {
-            throw new IOException("الملف اتحمل بس شكله مش موديل Vosk صحيح");
-        }
+    /** مسح التحميل الناقص ورجوع الحالة لـ idle */
+    public static void cleanup(Context c) {
+        deleteRec(partFile(c));
+        deleteRec(tmpDir(c));
+        prefs(c).edit()
+                .putString("state", S_IDLE)
+                .putLong("total", 0)
+                .putBoolean("user_paused", false)
+                .putString("error", "")
+                .commit();
     }
 
-    private static void unzip(File zip, File dest, Progress p) throws IOException {
-        dest.mkdirs();
-        String root = dest.getCanonicalPath() + File.separator;
-        ZipInputStream zin = new ZipInputStream(new BufferedInputStream(new FileInputStream(zip)));
-        try {
-            ZipEntry e;
-            byte[] buf = new byte[64 * 1024];
-            int count = 0;
-            while ((e = zin.getNextEntry()) != null) {
-                File f = new File(dest, e.getName());
-                if (!f.getCanonicalPath().startsWith(root)) {
-                    throw new IOException("ملف مضغوط غير آمن");
-                }
-                if (e.isDirectory()) {
-                    f.mkdirs();
-                    continue;
-                }
-                f.getParentFile().mkdirs();
-                OutputStream o = new BufferedOutputStream(new FileOutputStream(f));
-                try {
-                    int n;
-                    while ((n = zin.read(buf)) > 0) o.write(buf, 0, n);
-                } finally {
-                    o.close();
-                }
-                count++;
-                if (count % 5 == 0) p.onProgress("فك الضغط: " + count + " ملف", -1);
-            }
-        } finally {
-            zin.close();
-        }
+    // ---------------------------------------------------------------- حالة التحميل (بتتحفظ علشان تفضل بعد قفل التطبيق)
+
+    private static SharedPreferences prefs(Context c) {
+        return c.getApplicationContext().getSharedPreferences("model_dl", Context.MODE_PRIVATE);
     }
 
-    private static void deleteRec(File f) {
+    public static String getState(Context c) {
+        return prefs(c).getString("state", S_IDLE);
+    }
+
+    public static void setState(Context c, String s) {
+        prefs(c).edit().putString("state", s).commit();
+    }
+
+    public static String getUrl(Context c) {
+        return prefs(c).getString("url", DEFAULT_URL);
+    }
+
+    public static void setUrl(Context c, String u) {
+        prefs(c).edit().putString("url", u).commit();
+    }
+
+    public static long getTotal(Context c) {
+        return prefs(c).getLong("total", 0);
+    }
+
+    public static void setTotal(Context c, long t) {
+        prefs(c).edit().putLong("total", t).commit();
+    }
+
+    public static boolean isUserPaused(Context c) {
+        return prefs(c).getBoolean("user_paused", false);
+    }
+
+    public static void setUserPaused(Context c, boolean v) {
+        prefs(c).edit().putBoolean("user_paused", v).commit();
+    }
+
+    public static String getError(Context c) {
+        return prefs(c).getString("error", "");
+    }
+
+    public static void setError(Context c, String e) {
+        prefs(c).edit().putString("error", e == null ? "" : e).commit();
+    }
+
+    /** تحميل جديد من الصفر */
+    public static void beginFresh(Context c, String url) {
+        deleteRec(partFile(c));
+        deleteRec(tmpDir(c));
+        prefs(c).edit()
+                .putString("url", url)
+                .putLong("total", 0)
+                .putString("state", S_DOWNLOADING)
+                .putBoolean("user_paused", false)
+                .putString("error", "")
+                .commit();
+    }
+
+    public static long partialBytes(Context c) {
+        File f = partFile(c);
+        return f.exists() ? f.length() : 0;
+    }
+
+    // ---------------------------------------------------------------- أدوات
+
+    public static String fmtSize(long bytes) {
+        if (bytes < 0) bytes = 0;
+        double mb = bytes / (1024.0 * 1024.0);
+        if (mb >= 1024) {
+            return String.format(Locale.US, "%.2f GB", mb / 1024.0);
+        }
+        return String.format(Locale.US, "%.1f MB", mb);
+    }
+
+    public static String fmtTime(long sec) {
+        if (sec < 0) sec = 0;
+        long h = sec / 3600;
+        long m = (sec % 3600) / 60;
+        long s = sec % 60;
+        if (h > 0) return String.format(Locale.US, "%d:%02d:%02d", h, m, s);
+        return String.format(Locale.US, "%d:%02d", m, s);
+    }
+
+    public static void deleteRec(File f) {
+        if (f == null) return;
         if (f.isDirectory()) {
             File[] kids = f.listFiles();
             if (kids != null) for (File k : kids) deleteRec(k);

@@ -22,7 +22,7 @@ import org.vosk.Recognizer;
 import org.vosk.android.RecognitionListener;
 import org.vosk.android.SpeechService;
 
-public class RecordActivity extends Activity {
+public class RecordActivity extends BaseActivity {
 
     private static final int REQ_AUDIO = 10;
 

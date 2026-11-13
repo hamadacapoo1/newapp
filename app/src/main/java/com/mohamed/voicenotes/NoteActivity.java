@@ -15,7 +15,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.Toast;
 
-public class NoteActivity extends Activity {
+public class NoteActivity extends BaseActivity {
 
     private NotesDb db;
     private long id;

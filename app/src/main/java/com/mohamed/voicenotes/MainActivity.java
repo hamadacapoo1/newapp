@@ -24,11 +24,12 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
-public class MainActivity extends Activity {
+public class MainActivity extends BaseActivity {
 
     private NotesDb db;
     private EditText etSearch;
     private TextView tvModel;
+    private Button btnTheme;
     private ListView list;
     private ArrayAdapter<String> adapter;
     private final List<Note> notes = new ArrayList<Note>();
@@ -42,6 +43,14 @@ public class MainActivity extends Activity {
 
         tvModel = (TextView) findViewById(R.id.tvModel);
         etSearch = (EditText) findViewById(R.id.etSearch);
+        btnTheme = (Button) findViewById(R.id.btnTheme);
+        btnTheme.setText(Prefs.isDark(this) ? "☀ نهاري" : "🌙 ليلي");
+        btnTheme.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                Prefs.setDark(MainActivity.this, !Prefs.isDark(MainActivity.this));
+                recreate();
+            }
+        });
         list = (ListView) findViewById(R.id.lvNotes);
 
         tvModel.setOnClickListener(new View.OnClickListener() {
@@ -95,12 +104,26 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        boolean dark = Prefs.isDark(this);
+        int green = dark ? Color.rgb(102, 187, 106) : Color.rgb(0, 120, 0);
+        int orange = dark ? Color.rgb(255, 167, 38) : Color.rgb(200, 90, 0);
+        String st = ModelManager.getState(this);
         if (ModelManager.isReady(this)) {
             tvModel.setText("✅ الموديل جاهز (بيشتغل أوفلاين)");
-            tvModel.setTextColor(Color.rgb(0, 120, 0));
+            tvModel.setTextColor(green);
+        } else if (ModelManager.S_DOWNLOADING.equals(st) || ModelManager.S_UNZIPPING.equals(st)) {
+            if (ModelDownloadService.isRunning()) {
+                tvModel.setText("⏬ الموديل بيتحمل في الخلفية — اضغط لمتابعة التقدّم");
+            } else {
+                tvModel.setText("⏸ تحميل الموديل اتوقف — اضغط هنا وكمّل");
+            }
+            tvModel.setTextColor(orange);
+        } else if (ModelManager.S_PAUSED.equals(st) || ModelManager.partialBytes(this) > 0) {
+            tvModel.setText("⏸ تحميل الموديل متوقف — اضغط هنا وكمّل");
+            tvModel.setTextColor(orange);
         } else {
             tvModel.setText("⚠ لازم تحمّل الموديل العربي أول مرة — اضغط هنا");
-            tvModel.setTextColor(Color.rgb(200, 90, 0));
+            tvModel.setTextColor(orange);
         }
         refresh();
     }
