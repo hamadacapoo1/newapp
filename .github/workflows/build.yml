@@ -33,12 +33,26 @@ jobs:
         with:
           gradle-version: '8.2'
 
+      - name: Find project folder
+        id: proj
+        run: |
+          echo "Repo contents:"
+          ls -la
+          SETTINGS=$(find . -maxdepth 3 -name settings.gradle -not -path "*/node_modules/*" | head -n 1)
+          if [ -z "$SETTINGS" ]; then
+            echo "settings.gradle not found. Upload the project files (app, build.gradle, settings.gradle) to the repo."
+            exit 1
+          fi
+          DIR=$(dirname "$SETTINGS")
+          echo "Project dir: $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
       - name: Build debug APK
-        working-directory: VoiceNotes_AIDE
+        working-directory: ${{ steps.proj.outputs.dir }}
         run: gradle assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: VoiceNotes-debug
-          path: VoiceNotes_AIDE/app/build/outputs/apk/debug/*.apk
+          path: ${{ steps.proj.outputs.dir }}/app/build/outputs/apk/debug/*.apk
